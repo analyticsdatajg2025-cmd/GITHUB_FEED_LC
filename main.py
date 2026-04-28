@@ -21,7 +21,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Configura los datos de tu nuevo REPOSITORIO aquí
 GITHUB_USER = "analyticsdatajg2025-cmd" 
-REPO_NAME = "CURACAO_FEED_PPL" # Cambia esto por el nombre de tu nuevo repo
+REPO_NAME = "GITHUB_FEED_LC" # Cambia esto por el nombre de tu nuevo repo
 BASE_URL_IMG = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/{OUTPUT_DIR}/"
 
 # Datos de La Curacao
