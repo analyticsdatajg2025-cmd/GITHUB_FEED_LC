@@ -145,7 +145,16 @@ def procesar_fila(row):
 # --- 4. MAIN ---
 def main():
     print(">>> [1/4] Descargando Feed LC...")
-    df = pd.read_csv(FEED_URL, sep='\t', on_bad_lines='skip', low_memory=False)
+    # --- BYPASS DE SEGURIDAD PARA LA CURACAO ---
+    print(">>> [1.5/4] Bypassing Firewall de La Curacao...")
+    res_feed = requests.get(FEED_URL, headers=HEADERS, timeout=60)
+    
+    if res_feed.status_code != 200:
+        print(f"❌ Error al descargar el feed: {res_feed.status_code}")
+        exit(1)
+        
+    df = pd.read_csv(BytesIO(res_feed.content), sep='\t', on_bad_lines='skip', low_memory=False)
+    # -------------------------------------------
     df.columns = [c.replace('g:', '').strip() for c in df.columns]
     
     df = df[df['availability'] == 'in stock'].copy()
