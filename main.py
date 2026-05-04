@@ -3,16 +3,17 @@ import requests
 from PIL import Image, ImageDraw, ImageFont
 from io import BytesIO
 import os
-import textwrap 
+import textwrap
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import json
 import glob
 import time
 import subprocess
+import re
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
-from urllib.parse import quote 
+from urllib.parse import quote
 
 # --- 1. CONFIGURACIÓN ---
 OUTPUT_DIR = "images"
@@ -20,7 +21,7 @@ ASSETS_DIR = "assets"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 GITHUB_USER = "analyticsdatajg2025-cmd" 
-REPO_NAME = "GITHUB_FEED_LC" # ⚠️ Verifica que sea idéntico en GitHub
+REPO_NAME = "GITHUB_FEED_LC" 
 BASE_URL_IMG = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/{OUTPUT_DIR}/"
 
 FEED_URL = "https://www.lacuracao.pe/media/feed/feed_fb_lc.csv"
@@ -48,6 +49,11 @@ else:
         exit(1)
 
 # --- 2. FUNCIONES AUXILIARES ---
+
+def limpiar_nombre_archivo(nombre):
+    """ Elimina caracteres prohibidos en nombres de archivos de Windows """
+    return re.sub(r'[\\/*?:"<>|]', '', nombre)
+
 def es_link_funcional(url):
     """ Verifica que el link no de error 404 ni 'Producto no encontrado' """
     try:
@@ -90,8 +96,10 @@ def procesar_fila(row):
         val_sale_price = get_clean_price_val(row.get('sale_price', 0))
         val_price = get_clean_price_val(row.get('price', 0))
 
-        # ID limpio para evitar 404 por caracteres invisibles
-        clean_id = str(row['id']).strip()
+        # Sanitización de ID para evitar errores de Windows (comillas, dos puntos, etc)
+        raw_id = str(row['id']).strip()
+        clean_id = limpiar_nombre_archivo(raw_id)
+        
         price_tag = f"{val_sale_price:.2f}".replace('.', '_')
         file_name = f"{clean_id}_{price_tag}.jpg"
         target_path = os.path.join(OUTPUT_DIR, file_name)
@@ -100,6 +108,7 @@ def procesar_fila(row):
         if os.path.exists(target_path):
             return final_url, False
 
+        # Limpieza de archivos antiguos usando el ID sanitizado
         for f in glob.glob(os.path.join(OUTPUT_DIR, f"{clean_id}_*.jpg")):
             try: os.remove(f)
             except: pass
@@ -120,13 +129,11 @@ def procesar_fila(row):
 
         color_blanco = (255, 255, 255)
         
-        # Formateo de Precios en Imagen
+        # Precios
         p_sale_str = f"{val_sale_price:.2f}"
         size_sale = 135
         f_sale = load_font(F_BOLD_PATH, size_sale)
-        f_symbol = load_font(F_BOLD_PATH, int(size_sale * 0.5)) 
         
-        # ... (Mantengo tu lógica de espaciado y dibujado del precio que ya tenías)
         w_monto = get_width_spaced(p_sale_str, f_sale, draw, -4)
         draw.text((1010 - w_monto, 920), p_sale_str, font=f_sale, fill=color_blanco)
 
@@ -141,7 +148,6 @@ def procesar_fila(row):
 def main():
     print(">>> [1/4] Descargando Feed LC...")
     res_feed = requests.get(FEED_URL, headers=HEADERS, timeout=60)
-    # Saltamos las primeras 2 filas si el CSV de LC viene con encabezados extra de Meta
     df = pd.read_csv(BytesIO(res_feed.content), sep=',', skiprows=2, on_bad_lines='skip', low_memory=False, encoding='utf-8')
     df.columns = [c.replace('g:', '').strip() for c in df.columns]
     
@@ -151,7 +157,7 @@ def main():
     rows_to_process = df.to_dict('records')
     print(f">>> Productos a validar: {len(rows_to_process)}")
 
-    # Sheets
+    # Google Sheets
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive'])
     sheet = gspread.authorize(creds).open_by_key(SHEET_ID).sheet1
     sheet.clear()
@@ -169,7 +175,7 @@ def main():
             if res and res[0]:
                 row = batch[idx]
                 row['image_link'] = res[0]
-                # 🔥 AJUSTE DE PRECIOS PARA SHEETS: "69.00 PEN"
+                # Formateo de Precios para Sheets
                 row['sale_price'] = f"{get_clean_price_val(row['sale_price']):.2f} PEN"
                 row['price'] = f"{get_clean_price_val(row['price']):.2f} PEN"
                 valid_data.append(row)
