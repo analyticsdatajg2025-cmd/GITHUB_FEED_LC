@@ -16,7 +16,7 @@ from tqdm import tqdm
 from urllib.parse import quote
 
 # --- 1. CONFIGURACIÓN ---
-OUTPUT_DIR = "images"
+OUTPUT_DIR = "images"  # Todas las imágenes irán aquí
 ASSETS_DIR = "assets"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -51,15 +51,16 @@ else:
 # --- 2. FUNCIONES AUXILIARES ---
 
 def limpiar_nombre_archivo(nombre):
-    """ Elimina caracteres prohibidos en nombres de archivos de Windows """
-    return re.sub(r'[\\/*?:"<>|]', '', nombre)
+    """ Elimina caracteres prohibidos para nombres de archivos y URLs limpias """
+    return re.sub(r'[\\/*?:"<>|]', '', str(nombre)).strip()
 
 def es_link_funcional(url):
-    """ Verifica que el link no de error 404 ni 'Producto no encontrado' """
+    """ Verifica que el link no de error 404 """
     try:
+        if not url or pd.isna(url): return False
         res = requests.get(url, headers=HEADERS, timeout=10)
         if res.status_code != 200: return False
-        if "producto no encontrado" in res.text.lower(): return False
+        if "no hemos encontrado resultados" in res.text.lower(): return False
         return True
     except: return False
 
@@ -89,26 +90,31 @@ def git_autosave(batch_index):
 # --- 3. PROCESAMIENTO DE IMAGEN ---
 def procesar_fila(row):
     try:
-        # Validación de Contingencia: Link funcional
-        if not es_link_funcional(str(row.get('link', '')).strip()):
+        val_sale_price = get_clean_price_val(row.get('sale_price', 0))
+        
+        # 🔥 REGLA DE ORO: Si el precio es 0, descartamos el producto
+        if val_sale_price <= 0:
             return None, False
 
-        val_sale_price = get_clean_price_val(row.get('sale_price', 0))
+        # Validación: Link funcional
+        prod_link = str(row.get('link', '')).strip()
+        if not es_link_funcional(prod_link):
+            return None, False
+
         val_price = get_clean_price_val(row.get('price', 0))
 
-        # Sanitización de ID para evitar errores de Windows (comillas, dos puntos, etc)
-        raw_id = str(row['id']).strip()
-        clean_id = limpiar_nombre_archivo(raw_id)
-        
+        # Nomenclatura ID_PRECIO.jpg
+        clean_id = limpiar_nombre_archivo(row['id'])
         price_tag = f"{val_sale_price:.2f}".replace('.', '_')
         file_name = f"{clean_id}_{price_tag}.jpg"
+        
         target_path = os.path.join(OUTPUT_DIR, file_name)
         final_url = f"{BASE_URL_IMG}{file_name}"
 
         if os.path.exists(target_path):
             return final_url, False
 
-        # Limpieza de archivos antiguos usando el ID sanitizado
+        # Limpiar versiones viejas del mismo ID
         for f in glob.glob(os.path.join(OUTPUT_DIR, f"{clean_id}_*.jpg")):
             try: os.remove(f)
             except: pass
@@ -128,34 +134,34 @@ def procesar_fila(row):
         canvas.paste(prod_img, ((1080 - prod_img.width)//2, 140 + (580 - prod_img.height)//2), prod_img)
 
         color_blanco = (255, 255, 255)
-        
-        # Precios
         p_sale_str = f"{val_sale_price:.2f}"
-        size_sale = 135
-        f_sale = load_font(F_BOLD_PATH, size_sale)
-        
+        f_sale = load_font(F_BOLD_PATH, 135)
         w_monto = get_width_spaced(p_sale_str, f_sale, draw, -4)
         draw.text((1010 - w_monto, 920), p_sale_str, font=f_sale, fill=color_blanco)
 
         canvas = canvas.resize((600, 600), Image.Resampling.LANCZOS)
         canvas.save(target_path, "JPEG", optimize=True, quality=80)
         return final_url, True
-
     except:
         return None, False
 
 # --- 4. MAIN ---
 def main():
-    print(">>> [1/4] Descargando Feed LC...")
+    print(">>> [1/4] Descargando y Purificando Feed LC...")
     res_feed = requests.get(FEED_URL, headers=HEADERS, timeout=60)
     df = pd.read_csv(BytesIO(res_feed.content), sep=',', skiprows=2, on_bad_lines='skip', low_memory=False, encoding='utf-8')
     df.columns = [c.replace('g:', '').strip() for c in df.columns]
     
+    # Purificación estilo Juntoz
     df = df[df['availability'].astype(str).str.lower().str.contains('in stock')].copy()
+    df = df.dropna(subset=['id', 'link', 'image_link'])
+    
+    # Unicidad por Título e ID
+    df.drop_duplicates(subset=['title'], keep='first', inplace=True)
     df.drop_duplicates(subset=['id'], keep='first', inplace=True)
     
     rows_to_process = df.to_dict('records')
-    print(f">>> Productos a validar: {len(rows_to_process)}")
+    print(f">>> Productos purificados: {len(rows_to_process)}")
 
     # Google Sheets
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive'])
@@ -163,7 +169,7 @@ def main():
     sheet.clear()
     sheet.append_row(list(df.columns))
 
-    print(">>> [3/4] Procesando...")
+    print(">>> [3/4] Procesando imágenes y subiendo a Sheets...")
     for i in range(0, len(rows_to_process), BATCH_SIZE):
         batch = rows_to_process[i : i + BATCH_SIZE]
         with ThreadPoolExecutor(max_workers=MAX_THREADS) as executor:
@@ -175,7 +181,6 @@ def main():
             if res and res[0]:
                 row = batch[idx]
                 row['image_link'] = res[0]
-                # Formateo de Precios para Sheets
                 row['sale_price'] = f"{get_clean_price_val(row['sale_price']):.2f} PEN"
                 row['price'] = f"{get_clean_price_val(row['price']):.2f} PEN"
                 valid_data.append(row)
@@ -185,7 +190,7 @@ def main():
             if any_new: git_autosave(i // BATCH_SIZE + 1)
             sheet.append_rows(pd.DataFrame(valid_data).astype(str).values.tolist(), value_input_option='RAW')
 
-    print("\n>>> 🏁 ¡PROCESO COMPLETADO!")
+    print("\n>>> 🏁 PROCESO LC FINALIZADO.")
 
 if __name__ == "__main__":
     main()
