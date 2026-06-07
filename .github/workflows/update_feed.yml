@@ -20,7 +20,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SHARDS: 8            # numero de maquinas en paralelo (Free permite hasta 20 jobs)
+  SHARDS: 12            # numero de maquinas en paralelo (Free permite hasta 20 jobs)
   PYTHON_VERSION: '3.10'
 
 jobs:
