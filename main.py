@@ -32,7 +32,7 @@ BASE_URL_IMG = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/{OUTPUT_DIR}/"
 FEED_URL = os.environ.get("FEED_URL", "https://www.lacuracao.pe/media/feed/feed_fb_lc.csv")
 SHEET_ID = "1vFSUCzMYO5-uh_Fs5OZlubjF2iMIyxqpDnFat9nKjg0"
 
-TEMPLATE_PATH = os.path.join(ASSETS_DIR, "LC - PLANTILLA OFERTAS FEEDOM_PPL_.jpg")
+TEMPLATE_PATH = os.path.join(ASSETS_DIR, "GENERICO")
 F_BOLD_PATH   = "GlacialIndifference-Bold.otf"
 F_REG_PATH    = "GlacialIndifference-Regular.otf"
 
