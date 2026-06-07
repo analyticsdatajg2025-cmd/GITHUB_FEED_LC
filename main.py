@@ -32,7 +32,7 @@ BASE_URL_IMG = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/{OUTPUT_DIR}/"
 FEED_URL = os.environ.get("FEED_URL", "https://www.lacuracao.pe/media/feed/feed_fb_lc.csv")
 SHEET_ID = "1vFSUCzMYO5-uh_Fs5OZlubjF2iMIyxqpDnFat9nKjg0"
 
-TEMPLATE_PATH = os.path.join(ASSETS_DIR, "GENERICO")
+TEMPLATE_PATH = os.path.join(ASSETS_DIR, "LC - PLANTILLA OFERTAS FEEDOM_PPL_.jpg")
 F_BOLD_PATH   = "GlacialIndifference-Bold.otf"
 F_REG_PATH    = "GlacialIndifference-Regular.otf"
 
@@ -454,11 +454,20 @@ def cmd_build(shard, shards, force):
     print(f">>> [build] válidos={len(results)} nuevos={nuevos}")
 
 
-def cmd_merge(valid_dir):
+def cmd_merge(valid_dir, expected_shards=None):
     parts = sorted(glob.glob(os.path.join(valid_dir, "valid_*.csv")))
     if not parts:
         parts = sorted(glob.glob("valid_*.csv"))
-    print(f">>> [merge] Uniendo {len(parts)} CSVs de shards...")
+    if not parts:
+        raise RuntimeError("No llegó ningún valid_*.csv. ¿Fallaron TODOS los shards?")
+
+    completo = (expected_shards is None) or (len(parts) >= expected_shards)
+    print(f">>> [merge] Uniendo {len(parts)} CSVs"
+          + (f" de {expected_shards} esperados." if expected_shards else "."))
+    if not completo:
+        print("⚠️  RUN PARCIAL: faltan shards. Modo seguro -> actualizo Sheets con lo "
+              "disponible y NO podo imágenes (para no borrar las buenas). "
+              "Usa 'Re-run failed jobs' para cerrar.")
 
     dfs = [pd.read_csv(p, low_memory=False) for p in parts]
     full = pd.concat(dfs, ignore_index=True)
@@ -466,17 +475,20 @@ def cmd_merge(valid_dir):
         full = full.sort_values('__order')
     full = full.drop_duplicates(subset=['id'], keep='first').reset_index(drop=True)
 
-    # --- Poda: dejar en images/ SOLO los archivos vigentes ---
-    valid_files = set(full['__file'].astype(str))
-    podadas = 0
-    for f in glob.glob(os.path.join(OUTPUT_DIR, "*.jpg")):
-        if os.path.basename(f) not in valid_files:
-            try:
-                os.remove(f)
-                podadas += 1
-            except OSError:
-                pass
-    print(f">>> [merge] Imágenes podadas (precio viejo / diseño viejo / sin stock): {podadas}")
+    # --- Poda: SOLO en runs completos (en parcial borraría imágenes buenas) ---
+    if completo:
+        valid_files = set(full['__file'].astype(str))
+        podadas = 0
+        for f in glob.glob(os.path.join(OUTPUT_DIR, "*.jpg")):
+            if os.path.basename(f) not in valid_files:
+                try:
+                    os.remove(f)
+                    podadas += 1
+                except OSError:
+                    pass
+        print(f">>> [merge] Imágenes podadas (precio viejo / diseño viejo / sin stock): {podadas}")
+    else:
+        print(">>> [merge] Poda OMITIDA por seguridad (run parcial).")
 
     # --- Manifest: refleja exactamente lo que queda en images/ ---
     actuales = sorted(os.path.basename(f) for f in glob.glob(os.path.join(OUTPUT_DIR, "*.jpg")))
@@ -487,7 +499,8 @@ def cmd_merge(valid_dir):
     # --- Escribir Sheets (sin columnas internas __) ---
     cols = [c for c in full.columns if not c.startswith('__')]
     write_sheet(full[cols].astype(str))
-    print(f">>> [merge] 🏁 Feed escrito: {len(full)} productos.")
+    print(f">>> [merge] 🏁 Feed escrito: {len(full)} productos. "
+          + ("COMPLETO." if completo else "PARCIAL (re-run para cerrar)."))
 
 
 # ===================== ENTRYPOINT =====================
@@ -504,6 +517,7 @@ def main():
 
     m = sub.add_parser("merge")
     m.add_argument("--valid-dir", default=".")
+    m.add_argument("--shards", type=int, default=None)
 
     args = ap.parse_args()
     if args.cmd == "prepare":
@@ -511,7 +525,7 @@ def main():
     elif args.cmd == "build":
         cmd_build(args.shard, args.shards, args.force)
     elif args.cmd == "merge":
-        cmd_merge(args.valid_dir)
+        cmd_merge(args.valid_dir, args.shards)
 
 
 if __name__ == "__main__":
