@@ -29,10 +29,10 @@ GITHUB_USER  = "analyticsdatajg2025-cmd"
 REPO_NAME    = "GITHUB_FEED_LC"
 BASE_URL_IMG = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/{OUTPUT_DIR}/"
 
-FEED_URL = "https://www.lacuracao.pe/media/feed/feed_fb_lc.csv"
+FEED_URL = os.environ.get("FEED_URL", "https://www.lacuracao.pe/media/feed/feed_fb_lc.csv")
 SHEET_ID = "1vFSUCzMYO5-uh_Fs5OZlubjF2iMIyxqpDnFat9nKjg0"
 
-TEMPLATE_PATH = os.path.join(ASSETS_DIR, "GENERICO.jpg")
+TEMPLATE_PATH = os.path.join(ASSETS_DIR, "LC - PLANTILLA OFERTAS FEEDOM_PPL_.jpg")
 F_BOLD_PATH   = "GlacialIndifference-Bold.otf"
 F_REG_PATH    = "GlacialIndifference-Regular.otf"
 
@@ -46,6 +46,17 @@ VALIDAR_LINK = True  # ponlo en False para ~duplicar la velocidad (confía en av
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+
+# Headers de navegador "real" para el feed (algunos WAF rechazan requests pelados)
+FEED_HEADERS = {
+    "User-Agent": UA,
+    "Accept": "text/csv,application/csv,text/plain,*/*;q=0.8",
+    "Accept-Language": "es-PE,es;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Referer": "https://www.lacuracao.pe/",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+}
 
 SCOPES = ["https://spreadsheets.google.com/feeds",
           "https://www.googleapis.com/auth/drive"]
@@ -358,10 +369,28 @@ def write_sheet(df):
 
 
 # ===================== MODOS =====================
+def descargar_feed(intentos=6):
+    """Descarga el feed aguantando 503 transitorios con backoff largo."""
+    last = None
+    for i in range(intentos):
+        try:
+            r = SESSION.get(FEED_URL, headers=FEED_HEADERS, timeout=120)
+            if r.status_code == 200 and r.content:
+                return r.content
+            last = f"HTTP {r.status_code}"
+        except requests.RequestException as e:
+            last = type(e).__name__
+        if i < intentos - 1:
+            wait = min(20 * (i + 1), 120)  # 20, 40, 60, ... hasta 120s
+            print(f">>> [prepare] feed no disponible ({last}); reintento {i+1}/{intentos} en {wait}s")
+            time.sleep(wait)
+    raise RuntimeError(f"No pude descargar el feed tras {intentos} intentos (último: {last})")
+
+
 def cmd_prepare():
     print(">>> [prepare] Descargando feed LC...")
-    res = SESSION.get(FEED_URL, timeout=120)
-    df, skip = read_feed(res.content)
+    content = descargar_feed()
+    df, skip = read_feed(content)
     n0 = len(df)
     print(f">>> [prepare] Encabezado OK (skiprows={skip}). Columnas: {list(df.columns)}")
 
