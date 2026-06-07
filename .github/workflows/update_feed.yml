@@ -1,44 +1,140 @@
-name: Actualizar Feed y Generar Imagenes
+name: Feed LC -> Imagenes (paralelo)
 
 on:
   schedule:
-    # Horas exactas para Perú (UTC-5): 02,05,08,11,14,17,20,23 UTC
+    # Horas Perú (UTC-5): 02,05,08,11,14,17,20,23
     - cron: '7 2,5,8,11,14,17,20,23 * * *'
-  
-  # Este disparador es clave para probar y resetear el reloj
-  push:
-    branches: [ "main" ]
-    
   workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: 'Regenerar TODAS las imagenes (ignora cache)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+# Evita que dos corridas se pisen (importante con schedule + push)
+concurrency:
+  group: feed-lc
+  cancel-in-progress: false
+
+env:
+  SHARDS: 8            # numero de maquinas en paralelo (Free permite hasta 20 jobs)
+  PYTHON_VERSION: '3.10'
 
 jobs:
-  build:
+  # ---------- FASE 1: preparar feed ----------
+  prepare:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
-    permissions:
-      contents: write
-    
+    timeout-minutes: 20
+    outputs:
+      matrix: ${{ steps.mk.outputs.matrix }}
     steps:
-      - name: Checkout del repositorio
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-
-      - name: Configurar Python
-        uses: actions/setup-python@v5
+          sparse-checkout: assets
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-
-      - name: Instalar dependencias
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Dependencias
         run: |
           python -m pip install --upgrade pip
-          pip install pandas requests Pillow gspread oauth2client tqdm
+          pip install pandas requests Pillow
+      - name: Descargar y purificar feed
+        run: python main.py prepare
+      - uses: actions/upload-artifact@v4
+        with:
+          name: feed-clean
+          path: feed_clean.csv
+          retention-days: 1
+      - id: mk
+        name: Construir matriz de shards
+        run: |
+          arr=$(python -c "import os,json;print(json.dumps(list(range(int(os.environ['SHARDS'])))))")
+          echo "matrix=$arr" >> "$GITHUB_OUTPUT"
 
-      - name: Ejecutar Script por Lotes
+  # ---------- FASE 2: generar imagenes en paralelo ----------
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      max-parallel: 8
+      matrix:
+        shard: ${{ fromJson(needs.prepare.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4   # SIN images/ -> usa el manifest, checkout liviano
+        with:
+          sparse-checkout: assets
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests Pillow
+      - uses: actions/download-artifact@v4
+        with:
+          name: feed-clean
+      - name: Generar imagenes (shard ${{ matrix.shard }})
+        run: |
+          python main.py build \
+            --shard ${{ matrix.shard }} \
+            --shards ${{ env.SHARDS }} \
+            ${{ (github.event_name == 'workflow_dispatch' && inputs.force_rebuild) && '--force' || '' }}
+      - name: Subir imagenes nuevas
+        uses: actions/upload-artifact@v4
+        with:
+          name: new-${{ matrix.shard }}
+          path: staging_new/
+          if-no-files-found: ignore
+          retention-days: 1
+      - name: Subir CSV valido
+        uses: actions/upload-artifact@v4
+        with:
+          name: valid-${{ matrix.shard }}
+          path: valid_${{ matrix.shard }}.csv
+          retention-days: 1
+
+  # ---------- FASE 3: unir, escribir Sheets, podar y commitear ----------
+  merge:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas gspread oauth2client
+      - name: Traer imagenes nuevas a images/
+        uses: actions/download-artifact@v4
+        with:
+          pattern: new-*
+          path: images
+          merge-multiple: true
+      - name: Traer CSVs validos
+        uses: actions/download-artifact@v4
+        with:
+          pattern: valid-*
+          path: valid_parts
+          merge-multiple: true
+      - name: Merge + Sheets + poda
         env:
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
+        run: python main.py merge --valid-dir valid_parts
+      - name: Commit y push (un solo pusher)
         run: |
-          git config --global user.name 'GitHub Action Bot'
-          git config --global user.email 'action@github.com'
-          git pull origin main || true
-          python main.py
+          git config user.name 'GitHub Action Bot'
+          git config user.email 'action@github.com'
+          git add images/ images_manifest.txt
+          git commit -m "Auto-update imagenes feed LC" || echo "sin cambios"
+          git pull --rebase origin main || true
+          git push
