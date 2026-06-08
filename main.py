@@ -303,8 +303,9 @@ def procesar_fila(args):
         ya_existe = file_name in EXISTING_FILES
 
         if force or not ya_existe:
-            # Solo aquí gastamos red: validar link + descargar + render
-            if VALIDAR_LINK and not es_link_funcional(str(row.get('link', '')).strip()):
+            # Solo aquí gastamos red: validar link (si hay) + descargar + render
+            link = str(row.get('link', '')).strip()
+            if VALIDAR_LINK and link and not es_link_funcional(link):
                 return None
             staged = os.path.join(STAGING_DIR, file_name)
             if not render_image(row, staged):
@@ -406,14 +407,14 @@ def cmd_prepare():
         'title':        col(df, 'title'),
     }
 
-    faltan = [k for k in ('id', 'link', 'image_link') if mapa[k] is None]
+    faltan = [k for k in ('id', 'image_link') if mapa[k] is None]
     if faltan:
         raise RuntimeError(f"Faltan columnas críticas: {faltan}. Detectadas: {list(df.columns)}")
 
     # Renombrar a los nombres que usa el resto del código
     df = df.rename(columns={real: logico for logico, real in mapa.items() if real})
 
-    # --- FILTRO 1: sin stock ---
+    # --- FILTRO 1: solo "in stock" ---
     if 'availability' in df.columns:
         antes = len(df)
         df = df[df['availability'].astype(str).str.lower().str.contains('in stock', na=False)].copy()
@@ -421,10 +422,26 @@ def cmd_prepare():
     else:
         print(">>> [prepare] Aviso: sin columna availability, no se filtra por stock.")
 
-    # --- FILTRO 2: vacíos en campos esenciales ---
-    for c in ('id', 'link', 'image_link'):
-        df = df[df[c].notna()]
-        df = df[df[c].astype(str).str.strip() != '']
+    def _no_vacio(serie):
+        return serie.notna() & (serie.astype(str).str.strip() != '')
+
+    # id obligatorio (es el nombre del archivo)
+    df = df[_no_vacio(df['id'])]
+
+    # --- FILTRO 2: debe tener URL en 'link' O en 'image_link' ---
+    antes = len(df)
+    tiene_link = _no_vacio(df['link']) if 'link' in df.columns else False
+    tiene_img = _no_vacio(df['image_link']) if 'image_link' in df.columns else False
+    df = df[tiene_link | tiene_img]
+    print(f">>> [prepare] Filtro link/image_link: -{antes - len(df)}")
+
+    # --- FILTRO 3: price y sale_price > 0 (fuera 0 o vacío) ---
+    antes = len(df)
+    if 'price' in df.columns:
+        df = df[df['price'].apply(get_clean_price_val) > 0]
+    if 'sale_price' in df.columns:
+        df = df[df['sale_price'].apply(get_clean_price_val) > 0]
+    print(f">>> [prepare] Filtro precios (price>0 y sale_price>0): -{antes - len(df)}")
 
     df.drop_duplicates(subset=['id'], keep='first', inplace=True)
     df['__order'] = range(len(df))
@@ -469,7 +486,25 @@ def cmd_merge(valid_dir, expected_shards=None):
               "disponible y NO podo imágenes (para no borrar las buenas). "
               "Usa 'Re-run failed jobs' para cerrar.")
 
-    dfs = [pd.read_csv(p, low_memory=False) for p in parts]
+    dfs, vacios = [], 0
+    for p in parts:
+        try:
+            d = pd.read_csv(p, low_memory=False)
+        except pd.errors.EmptyDataError:
+            vacios += 1
+            continue
+        if d.empty:
+            vacios += 1
+        else:
+            dfs.append(d)
+    if vacios:
+        print(f">>> [merge] {vacios}/{len(parts)} CSV(s) vacíos (shards sin productos válidos), ignorados.")
+    if not dfs:
+        raise RuntimeError(
+            "TODOS los CSVs vinieron vacíos: no se generó ningún producto. "
+            "Lo más probable es que el WAF de lacuracao.pe esté bloqueando las IPs de GitHub "
+            "(revisa el log de un job 'build': si dice 'válidos=0' es eso). "
+            "Solución: mirror del feed/imágenes o whitelist de IPs.")
     full = pd.concat(dfs, ignore_index=True)
     if '__order' in full.columns:
         full = full.sort_values('__order')
@@ -496,9 +531,10 @@ def cmd_merge(valid_dir, expected_shards=None):
         mf.write("\n".join(actuales) + "\n")
     print(f">>> [merge] Manifest actualizado: {len(actuales)} imágenes")
 
-    # --- Escribir Sheets (sin columnas internas __) ---
+    # --- Escribir Sheets (sin columnas internas __, y NaN como vacío) ---
     cols = [c for c in full.columns if not c.startswith('__')]
-    write_sheet(full[cols].astype(str))
+    salida = full[cols].fillna('').astype(str).replace({'nan': '', 'NaN': '', 'None': ''})
+    write_sheet(salida)
     print(f">>> [merge] 🏁 Feed escrito: {len(full)} productos. "
           + ("COMPLETO." if completo else "PARCIAL (re-run para cerrar)."))
 
