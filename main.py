@@ -32,7 +32,7 @@ BASE_URL_IMG = f"https://{GITHUB_USER}.github.io/{REPO_NAME}/{OUTPUT_DIR}/"
 FEED_URL = os.environ.get("FEED_URL", "https://www.lacuracao.pe/media/feed/feed_fb_lc.csv")
 SHEET_ID = "1vFSUCzMYO5-uh_Fs5OZlubjF2iMIyxqpDnFat9nKjg0"
 
-TEMPLATE_PATH = os.path.join(ASSETS_DIR, "GENERICO.jpg")
+TEMPLATE_PATH = os.path.join(ASSETS_DIR, "GENERICO_LC.png")
 F_BOLD_PATH   = "GlacialIndifference-Bold.otf"
 F_REG_PATH    = "GlacialIndifference-Regular.otf"
 
@@ -207,7 +207,7 @@ def render_image(row, target_path):
     prod_img.thumbnail((680, 520), Image.Resampling.LANCZOS)
     canvas.paste(prod_img, ((1080 - prod_img.width) // 2, 140 + (580 - prod_img.height) // 2), prod_img)
 
-    color_blanco = (255, 255, 255)
+    color_blanco = (0, 0, 0)
     MARGIN_RIGHT, MARGIN_LEFT = 1010, 70
     WIDTH_PRICE_MAX = 420
 
