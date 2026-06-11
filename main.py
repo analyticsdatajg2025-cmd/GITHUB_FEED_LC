@@ -47,15 +47,11 @@ VALIDAR_LINK = True  # ponlo en False para ~duplicar la velocidad (confía en av
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 
-# Headers de navegador "real" para el feed (algunos WAF rechazan requests pelados)
+# Headers del feed: minimos y "limpios" (los elaborados gatillan el WAF)
 FEED_HEADERS = {
     "User-Agent": UA,
-    "Accept": "text/csv,application/csv,text/plain,*/*;q=0.8",
+    "Accept": "*/*",
     "Accept-Language": "es-PE,es;q=0.9,en;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Referer": "https://www.lacuracao.pe/",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
 }
 
 SCOPES = ["https://spreadsheets.google.com/feeds",
@@ -371,11 +367,12 @@ def write_sheet(df):
 
 # ===================== MODOS =====================
 def descargar_feed(intentos=6):
-    """Descarga el feed aguantando 503 transitorios con backoff largo."""
+    """Descarga el feed aguantando 503 transitorios con backoff largo.
+    Usa requests.get plano (sin el retry de estado de la sesión) para ver el código real."""
     last = None
     for i in range(intentos):
         try:
-            r = SESSION.get(FEED_URL, headers=FEED_HEADERS, timeout=120)
+            r = requests.get(FEED_URL, headers=FEED_HEADERS, timeout=120)
             if r.status_code == 200 and r.content:
                 return r.content
             last = f"HTTP {r.status_code}"
